@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import CalendarView from "./components/CalendarView";
 import {
   checkHealth,
   fetchAIExplanation,
@@ -17,6 +18,40 @@ const timeSlots = [
   "16:00-17:30",
   "19:00-20:30",
 ];
+
+function blockId(block) {
+  return block.id ?? `${block.taskId}-part-${block.part}`;
+}
+
+function normalizeBlock(block, day, slot) {
+  return {
+    ...block,
+    id: blockId(block),
+    day,
+    slot,
+    reason: block.reason ?? block.explanation ?? "",
+  };
+}
+
+function findBlockCell(grid, id) {
+  if (!grid) return null;
+  for (const day of days) {
+    for (const slot of timeSlots) {
+      if (grid[day]?.[slot]?.id === id) return { day, slot };
+    }
+  }
+  return null;
+}
+
+function dateToScheduleCell(value) {
+  const date = new Date(value);
+  const day = days[(date.getDay() + 6) % 7];
+  const start = `${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes()
+  ).padStart(2, "0")}`;
+  const slot = timeSlots.find((candidate) => candidate.startsWith(`${start}-`));
+  return slot ? { day, slot } : null;
+}
 
 function isoDaysFromNow(n) {
   const d = new Date();
@@ -90,6 +125,7 @@ function getPriorityScore(task) {
 function splitTaskIntoBlocks(task) {
   const blockCount = Math.ceil(task.estimatedHours / 1.5);
   return Array.from({ length: blockCount }, (_, index) => ({
+    id: `${task.id}-part-${index + 1}`,
     taskId: task.id,
     title: task.title,
     course: task.course,
@@ -122,7 +158,7 @@ function generateLocalSchedule(tasks) {
         const isMorning = slot === "09:00-10:30" || slot === "10:30-12:00";
         if (block.difficulty === "Hard" && !isMorning) continue;
         if (!schedule[day][slot]) {
-          schedule[day][slot] = { ...block, day, slot };
+          schedule[day][slot] = normalizeBlock(block, day, slot);
           placed = true;
           break;
         }
@@ -133,7 +169,7 @@ function generateLocalSchedule(tasks) {
       outer: for (const day of days) {
         for (const slot of timeSlots) {
           if (!schedule[day][slot]) {
-            schedule[day][slot] = { ...block, day, slot };
+            schedule[day][slot] = normalizeBlock(block, day, slot);
             break outer;
           }
         }
@@ -146,18 +182,6 @@ function generateLocalSchedule(tasks) {
 /* ------------------------------------------------------------------ */
 /* Small presentational helpers                                        */
 /* ------------------------------------------------------------------ */
-
-function getBlockTheme(block) {
-  const difficultyStyles = {
-    Hard: "bg-rose-50 border-rose-100 text-rose-900",
-    Medium: "bg-amber-50 border-amber-100 text-amber-950",
-    Easy: "bg-emerald-50 border-emerald-100 text-emerald-900",
-  };
-  return (
-    difficultyStyles[block.difficulty] ??
-    "bg-slate-50 border-slate-200 text-slate-900"
-  );
-}
 
 function Label({ children }) {
   return (
@@ -222,8 +246,6 @@ export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [tasks, setTasks] = useState(initialTasks);
   const [schedule, setSchedule] = useState(null);
-  const [dragSource, setDragSource] = useState(null);
-  const [dragOver, setDragOver] = useState(null);
   const [calendarExpanded, setCalendarExpanded] = useState(false);
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [aiExplanation, setAIExplanation] = useState("");
@@ -303,7 +325,7 @@ export default function App() {
   function handleAddTask(event) {
     event.preventDefault();
     if (!form.title || !form.course || !form.deadline) {
-      alert("Please fill in title, course, and deadline.");
+      setRecommendation("Please fill in the task title, course, and deadline.");
       return;
     }
     const newTask = {
@@ -349,7 +371,7 @@ export default function App() {
         grid[day] = {};
         timeSlots.forEach((slot) => {
           const b = data.schedule[day][slot];
-          grid[day][slot] = b ? { ...b, day, slot } : null;
+          grid[day][slot] = b ? normalizeBlock(b, day, slot) : null;
         });
       });
       setSchedule(grid);
@@ -368,68 +390,90 @@ export default function App() {
     }
   }
 
-  function handleBlockDragStart(day, slot) {
-    setDragSource({ day, slot });
-  }
+  function handleMoveBlock(id, newStart, newEnd) {
+    const target = dateToScheduleCell(newStart);
+    const source = findBlockCell(schedule, id);
+    if (!source || !target) return false;
 
-  function handleBlockDragEnd() {
-    setDragSource(null);
-  }
-
-  function moveBlockToSlot(targetDay, targetSlot) {
-    if (!dragSource) return;
-    const { day: sourceDay, slot: sourceSlot } = dragSource;
+    const { day: sourceDay, slot: sourceSlot } = source;
+    const { day: targetDay, slot: targetSlot } = target;
     if (sourceDay === targetDay && sourceSlot === targetSlot) {
-      setDragSource(null);
-      setDragOver(null);
-      return;
+      return true;
     }
+
     setSchedule((prev) => {
+      const currentSource = findBlockCell(prev, id);
+      if (!currentSource) return prev;
+
       const updated = structuredClone(prev);
-      const sourceBlock = updated[sourceDay][sourceSlot];
+      const sourceBlock = updated[currentSource.day][currentSource.slot];
       const targetBlock = updated[targetDay][targetSlot];
       if (!sourceBlock) return prev;
+
       if (targetBlock) {
-        updated[sourceDay][sourceSlot] = {
+        updated[currentSource.day][currentSource.slot] = {
           ...targetBlock,
-          day: sourceDay,
-          slot: sourceSlot,
+          day: currentSource.day,
+          slot: currentSource.slot,
         };
       } else {
-        updated[sourceDay][sourceSlot] = null;
+        updated[currentSource.day][currentSource.slot] = null;
       }
+
+      const manualReason =
+        "Manually moved by you - the optimizer respects your choice. (User control over AI initiative.)";
       updated[targetDay][targetSlot] = {
         ...sourceBlock,
         day: targetDay,
         slot: targetSlot,
-        explanation:
-          "Manually moved by you - the optimizer respects your choice. (User control over AI initiative.)",
+        start: newStart.toISOString(),
+        end: newEnd.toISOString(),
+        manuallyMoved: true,
+        explanation: manualReason,
+        reason: manualReason,
       };
       return updated;
     });
-    setDragSource(null);
-    setDragOver(null);
+
+    setSelectedBlock((current) =>
+      current?.id === id
+        ? {
+            ...current,
+            day: targetDay,
+            slot: targetSlot,
+            start: newStart.toISOString(),
+            end: newEnd.toISOString(),
+            manuallyMoved: true,
+          }
+        : current
+    );
     setRecommendation("Task moved. Your schedule now reflects the new placement.");
+    return true;
   }
 
-  function handleDragEnter(day, slot) {
-    setDragOver({ day, slot });
-  }
+  async function handleFeedback(block, action) {
+    const status = action === "complete" ? "Completed" : "Skipped";
+    const cell = findBlockCell(schedule, block.id);
+    if (!cell) return;
 
-  function handleDragLeave() {
-    setDragOver(null);
-  }
-
-  async function updateBlockStatus(day, slot, status) {
     setSchedule((prev) => {
+      const currentCell = findBlockCell(prev, block.id);
+      if (!currentCell) return prev;
       const updated = structuredClone(prev);
-      updated[day][slot].status = status;
+      updated[currentCell.day][currentCell.slot].status = status;
       return updated;
     });
+    setSelectedBlock((current) =>
+      current?.id === block.id ? { ...current, status } : current
+    );
 
-    if (backendOnline && (status === "Completed" || status === "Skipped")) {
+    if (backendOnline) {
       try {
-        const res = await sendFeedback(day, slot, status === "Completed");
+        const res = await sendFeedback(
+          cell.day,
+          cell.slot,
+          action === "complete"
+        );
         setRecommendation(res.message);
         refreshModel();
         return;
@@ -438,9 +482,9 @@ export default function App() {
       }
     }
 
-    if (status === "Completed") {
+    if (action === "complete") {
       setRecommendation("Good job. Your progress has been updated.");
-    } else if (status === "Skipped") {
+    } else {
       setRecommendation(
         "You skipped this study block. Regenerate the plan and the engine will avoid this slot for hard tasks."
       );
@@ -455,7 +499,9 @@ export default function App() {
   }
 
   async function handleAIExplain(block) {
-    openBlockDetails(block);
+    setSelectedBlock(block);
+    setAIExplanation("");
+    setAIUsedFallback(false);
     setAILoading(true);
     try {
       const data = await fetchAIExplanation(block);
@@ -476,8 +522,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.18),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(34,197,94,0.16),_transparent_22%),linear-gradient(180deg,#f8fafc,#eaf5f4)] text-slate-900">
-      <div className="flex">
-        <aside className="hidden md:flex w-72 min-h-screen bg-gradient-to-br from-slate-950 via-cyan-900 to-emerald-700 text-white flex-col p-6 fixed left-0 top-0">
+      <div className="flex min-h-screen">
+        <aside className="sticky top-0 hidden h-screen w-72 shrink-0 flex-col bg-gradient-to-br from-slate-950 via-cyan-900 to-emerald-700 p-6 text-white md:flex">
           <h1 className="text-3xl font-bold mb-1 tracking-tight">StudyPlan</h1>
           <p className="text-sm text-slate-200 mb-4 max-w-[12rem]">
             Smart Study Calendar
@@ -507,7 +553,7 @@ export default function App() {
           </div>
         </aside>
 
-        <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8 md:px-10 md:ml-72">
+        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 sm:py-8 md:px-8 lg:px-10">
           <header className="mb-10">
             <div className="inline-flex items-center rounded-full bg-white/80 px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-200">
               Intelligent User Interfaces Project · Group 7
@@ -547,20 +593,15 @@ export default function App() {
 
           {activePage === "Calendar" && (
             <>
-              <CalendarPage
+              <CalendarView
                 schedule={schedule}
-                handleGeneratePlan={handleGeneratePlan}
                 generating={generating}
-                handleBlockDragStart={handleBlockDragStart}
-                handleBlockDragEnd={handleBlockDragEnd}
-                moveBlockToSlot={moveBlockToSlot}
-                dragOver={dragOver}
-                handleDragEnter={handleDragEnter}
-                handleDragLeave={handleDragLeave}
-                calendarExpanded={calendarExpanded}
-                setCalendarExpanded={setCalendarExpanded}
-                openBlockDetails={openBlockDetails}
-                handleAIExplain={handleAIExplain}
+                expanded={calendarExpanded}
+                onToggleExpanded={() => setCalendarExpanded((value) => !value)}
+                onRegenerate={handleGeneratePlan}
+                onMoveBlock={handleMoveBlock}
+                onOpenBlock={openBlockDetails}
+                onExplainBlock={handleAIExplain}
               />
               {selectedBlock && (
                 <TaskModal
@@ -570,10 +611,9 @@ export default function App() {
                   aiUsedFallback={aiUsedFallback}
                   onAIExplain={() => handleAIExplain(selectedBlock)}
                   onClose={() => setSelectedBlock(null)}
-                  onStatusChange={(status) => {
-                    updateBlockStatus(selectedBlock.day, selectedBlock.slot, status);
-                    setSelectedBlock(null);
-                  }}
+                  onStatusChange={(action) =>
+                    handleFeedback(selectedBlock, action)
+                  }
                 />
               )}
             </>
@@ -895,13 +935,13 @@ function TaskModal({
 
           <div className="flex gap-3">
             <button
-              onClick={() => onStatusChange("Completed")}
+              onClick={() => onStatusChange("complete")}
               className="flex-1 rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:-translate-y-0.5 hover:shadow-md"
             >
               Mark Done
             </button>
             <button
-              onClick={() => onStatusChange("Skipped")}
+              onClick={() => onStatusChange("skip")}
               className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-900 transition hover:bg-slate-50"
             >
               Skip
@@ -920,6 +960,11 @@ function TaskModal({
   );
 }
 
+/*
+The former inline calendar grid was retired in favor of components/CalendarView.
+It remains inside this migration comment only until the surrounding file is split
+into page-level components.
+
 function CalendarPage({
   schedule,
   handleGeneratePlan,
@@ -935,7 +980,131 @@ function CalendarPage({
   openBlockDetails,
   handleAIExplain,
 }) {
-  return (
+  const weekStart = useMemo(() => getWeekMonday(), []);
+  const calendarEvents = useMemo(
+    () => scheduleToCalendarEvents(schedule, weekStart),
+    [schedule, weekStart]
+  );
+
+  function handleCalendarDrop(info) {
+    const source = {
+      day: info.oldEvent.extendedProps.day,
+      slot: info.oldEvent.extendedProps.slot,
+    };
+    const target = calendarDateToCell(info.event.start, weekStart);
+
+    if (!target) {
+      info.revert();
+      return;
+    }
+
+    moveBlockToSlot(target.day, target.slot, source);
+  }
+
+  function renderCalendarEvent(info) {
+    const block = info.event.extendedProps;
+    return (
+      <div className="study-event-content">
+        <div className="study-event-course">{block.course}</div>
+        <div className="study-event-title">{block.title}</div>
+        <div className="study-event-footer">
+          {block.parts > 1 ? (
+            <span className="study-event-part">
+              {block.part}/{block.parts}
+            </span>
+          ) : (
+            <span />
+          )}
+          <button
+            type="button"
+            className="study-event-ai"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleAIExplain(block);
+            }}
+          >
+            <SparklesIcon />
+            AI
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const fullCalendarView = (
+    <section
+      className={`bg-white/95 border border-slate-200 rounded-[2rem] shadow-[0_20px_55px_-35px_rgba(15,23,42,0.25)] p-4 md:p-6 transition-all duration-300 w-full ${
+        calendarExpanded ? "fixed inset-3 z-30 overflow-y-auto bg-white" : "relative"
+      }`}
+    >
+      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-xl font-bold text-slate-950">Weekly Calendar</h3>
+          <p className="mt-1 text-sm text-slate-500">
+            Drag blocks between supported study slots. Click one for details,
+            completion controls, and its AI explanation.
+          </p>
+        </div>
+
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+          <button
+            onClick={() => setCalendarExpanded((value) => !value)}
+            className="rounded-2xl bg-slate-950 px-5 py-2 font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+          >
+            {calendarExpanded ? "Collapse View" : "Expand Calendar"}
+          </button>
+          <button
+            onClick={handleGeneratePlan}
+            disabled={generating}
+            className="rounded-2xl bg-amber-400 px-5 py-2 font-semibold text-slate-950 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md disabled:opacity-60"
+          >
+            {generating ? "Optimizing..." : "Regenerate Plan"}
+          </button>
+        </div>
+      </div>
+
+      {!schedule ? (
+        <div className="py-16 text-center text-slate-500">
+          Click “Generate Weekly Plan” to create your study calendar.
+        </div>
+      ) : (
+        <div className="study-calendar-frame">
+          <FullCalendar
+            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+            initialDate={weekStart}
+            initialView="timeGridWeek"
+            firstDay={1}
+            height="auto"
+            nowIndicator
+            navLinks
+            editable
+            eventStartEditable
+            eventDurationEditable={false}
+            allDaySlot={false}
+            slotMinTime="08:00:00"
+            slotMaxTime="22:00:00"
+            slotDuration="00:30:00"
+            snapDuration="00:30:00"
+            slotLabelInterval="01:00:00"
+            expandRows={false}
+            dayMaxEvents
+            headerToolbar={{
+              left: "prev,next today",
+              center: "title",
+              right: "dayGridMonth,timeGridWeek,timeGridDay",
+            }}
+            events={calendarEvents}
+            eventContent={renderCalendarEvent}
+            eventClick={(info) => openBlockDetails(info.event.extendedProps)}
+            eventDrop={handleCalendarDrop}
+          />
+        </div>
+      )}
+    </section>
+  );
+
+  Kept as an inert fallback while the FullCalendar migration settles.
+  if (!FullCalendar) return (
     <section
       className={`bg-white/95 border border-slate-200 rounded-[2rem] shadow-[0_20px_55px_-35px_rgba(15,23,42,0.25)] p-4 md:p-6 transition-all duration-300 w-full ${
         calendarExpanded ? "fixed inset-3 z-30 overflow-y-auto bg-white" : "relative"
@@ -1169,7 +1338,10 @@ function CalendarPage({
       )}
     </section>
   );
+
+  return fullCalendarView;
 }
+*/
 
 /* ------------------------------------------------------------------ */
 /* Analytics: learned focus profile                                    */

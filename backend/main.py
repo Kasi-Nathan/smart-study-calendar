@@ -21,6 +21,7 @@ app.add_middleware(
 
 # Register AI routes
 app.include_router(ai_router)
+app.include_router(ai_router, prefix="/api")
 
 model = FocusModel()
 

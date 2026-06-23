@@ -54,7 +54,7 @@ export async function fetchAIExplanation(block) {
       course: block.course,
       difficulty: block.difficulty,
       priority: block.priority,
-      existing_explanation: block.explanation ?? "",
+      existing_explanation: block.reason ?? block.explanation ?? "",
       scoreBreakdown: block.scoreBreakdown ?? {},
     }),
   });
