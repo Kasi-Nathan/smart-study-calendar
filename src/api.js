@@ -30,10 +30,17 @@ export function fetchSchedule(tasks, preferences) {
   });
 }
 
-export function sendFeedback(day, slot, completed) {
+export function sendFeedback(day, slot, completed, metadata = {}) {
   return request("/feedback", {
     method: "POST",
-    body: JSON.stringify({ day, slot, completed }),
+    body: JSON.stringify({ day, slot, completed, ...metadata }),
+  });
+}
+
+export function logMove(metadata = {}) {
+  return request("/learning/move", {
+    method: "POST",
+    body: JSON.stringify(metadata),
   });
 }
 

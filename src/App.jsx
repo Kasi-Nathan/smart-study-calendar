@@ -5,6 +5,7 @@ import {
   fetchAIExplanation,
   fetchModel,
   fetchSchedule,
+  logMove,
   resetModel,
   sendFeedback,
 } from "./api";
@@ -97,6 +98,15 @@ function getFeedbackCell(block) {
       : closest;
   }, null)?.slot;
   return slot ? { day, slot } : null;
+}
+
+function deadlineDaysLeft(deadline) {
+  if (!deadline) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(deadline);
+  due.setHours(0, 0, 0, 0);
+  return Math.ceil((due - today) / (1000 * 60 * 60 * 24));
 }
 
 function loadStoredBlocks() {
@@ -378,6 +388,29 @@ export default function App() {
     };
   }, [scheduledBlocks]);
 
+  function feedbackMetadata(block, dateValue = block.start) {
+    const task = tasks.find((item) => item.id === block.taskId);
+    const scheduledDate = dateValue ? new Date(dateValue) : null;
+    return {
+      taskId: block.taskId,
+      course: block.course ?? task?.course ?? "",
+      difficulty: block.difficulty ?? task?.difficulty ?? "Medium",
+      priority: block.priority ?? task?.priority ?? "Medium",
+      estimatedHours: task?.estimatedHours ?? block.estimatedHours ?? 1.5,
+      deadline: task?.deadline ?? block.deadline ?? "",
+      deadlineDaysLeft: deadlineDaysLeft(task?.deadline ?? block.deadline),
+      scheduledDay: scheduledDate ? ((scheduledDate.getDay() + 6) % 7) + 1 : 0,
+      scheduledHour: scheduledDate ? scheduledDate.getHours() : 0,
+    };
+  }
+
+  function logMoveFeedback(block, newStart) {
+    if (!backendOnline) return;
+    logMove(feedbackMetadata(block, newStart)).catch(() => {
+      setBackendOnline(false);
+    });
+  }
+
   function handleAddTask(event) {
     event.preventDefault();
     if (!form.title || !form.course || !form.deadline) {
@@ -475,8 +508,10 @@ export default function App() {
   }
 
   function handleEventDrop(id, newStart, newEnd) {
+    const block = scheduledBlocks.find((item) => item.id === id);
     const updated = updateBlockTime(id, newStart, newEnd);
     if (updated) {
+      if (block) logMoveFeedback(block, newStart);
       setRecommendation(
         "Task moved. Your schedule now reflects the new placement."
       );
@@ -485,8 +520,10 @@ export default function App() {
   }
 
   function handleEventResize(id, newStart, newEnd) {
+    const block = scheduledBlocks.find((item) => item.id === id);
     const updated = updateBlockTime(id, newStart, newEnd);
     if (updated) {
+      if (block) logMoveFeedback(block, newStart);
       setRecommendation(
         "Study block duration updated. Your manual adjustment has been saved."
       );
@@ -514,7 +551,8 @@ export default function App() {
         const res = await sendFeedback(
           feedbackCell.day,
           feedbackCell.slot,
-          action === "complete"
+          action === "complete",
+          feedbackMetadata(currentBlock)
         );
         setRecommendation(res.message);
         refreshModel();

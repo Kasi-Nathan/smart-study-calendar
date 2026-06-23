@@ -1,0 +1,50 @@
+[
+  {
+    "taskId": 3,
+    "course": "German",
+    "difficulty": 1,
+    "priority": 1,
+    "estimatedHours": 2.0,
+    "deadlineDaysLeft": 7,
+    "scheduledDay": 1,
+    "scheduledHour": 10,
+    "action": "completed",
+    "timestamp": "2026-06-23T18:17:00"
+  },
+  {
+    "taskId": 1,
+    "course": "Data Modeling",
+    "difficulty": 3,
+    "priority": 3,
+    "estimatedHours": 4.5,
+    "deadlineDaysLeft": 3,
+    "scheduledDay": 2,
+    "scheduledHour": 9,
+    "action": "skipped",
+    "timestamp": "2026-06-23T18:17:05"
+  },
+  {
+    "taskId": 4,
+    "course": "Intelligent User Interfaces",
+    "difficulty": 3,
+    "priority": 3,
+    "estimatedHours": 3.0,
+    "deadlineDaysLeft": 2,
+    "scheduledDay": 2,
+    "scheduledHour": 10,
+    "action": "skipped",
+    "timestamp": "2026-06-23T18:17:09"
+  },
+  {
+    "taskId": 4,
+    "course": "Intelligent User Interfaces",
+    "difficulty": 3,
+    "priority": 3,
+    "estimatedHours": 3.0,
+    "deadlineDaysLeft": 2,
+    "scheduledDay": 4,
+    "scheduledHour": 8,
+    "action": "moved",
+    "timestamp": "2026-06-23T18:17:25"
+  }
+]

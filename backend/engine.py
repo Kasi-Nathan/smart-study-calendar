@@ -34,6 +34,7 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "user_model.json")
 
 DIFFICULTY = {"Easy": 1, "Medium": 2, "Hard": 3}
 PRIORITY = {"Low": 1, "Medium": 2, "High": 3}
+COURSE_WEIGHT = 0.25
 
 
 # --------------------------------------------------------------------------
@@ -52,6 +53,7 @@ class FocusModel:
         self.path = path
         self.cells: dict[str, dict[str, float]] = {}
         self.events: list[dict] = []
+        self.course_stats: dict[str, dict[str, int]] = {}
         self._init_prior()
         self.load()
 
@@ -84,7 +86,7 @@ class FocusModel:
         return int(self.cells[self.key(day, slot)].get("n", 0))
 
     # --- learning --------------------------------------------------------
-    def update(self, day: str, slot: str, completed: bool):
+    def update(self, day: str, slot: str, completed: bool, course: str | None = None):
         c = self.cells[self.key(day, slot)]
         c["n"] = c.get("n", 0) + 1
         if completed:
@@ -95,12 +97,42 @@ class FocusModel:
             "day": day, "slot": slot, "completed": completed,
             "t": datetime.now().isoformat(timespec="seconds"),
         })
+        if course:
+            self.update_course_stats(course, "completed" if completed else "skipped")
         self.save()
+
+    def update_course_stats(self, course: str, action: str):
+        course = (course or "").strip()
+        if not course:
+            return
+        stats = self.course_stats.setdefault(course, {"success": 0, "failure": 0})
+        if action == "completed":
+            stats["success"] = int(stats.get("success", 0)) + 1
+        elif action in {"skipped", "moved"}:
+            stats["failure"] = int(stats.get("failure", 0)) + 1
+
+    def get_course_score(self, course: str | None) -> float:
+        if not course:
+            return 0.5
+        stats = self.course_stats.get(course)
+        if not stats:
+            return 0.5
+        success = int(stats.get("success", 0))
+        failure = int(stats.get("failure", 0))
+        return (success + 1) / (success + failure + 2)
 
     # --- persistence -----------------------------------------------------
     def save(self):
         with open(self.path, "w") as f:
-            json.dump({"cells": self.cells, "events": self.events}, f, indent=1)
+            json.dump(
+                {
+                    "cells": self.cells,
+                    "events": self.events,
+                    "course_stats": self.course_stats,
+                },
+                f,
+                indent=1,
+            )
 
     def load(self):
         if os.path.exists(self.path):
@@ -108,11 +140,21 @@ class FocusModel:
                 data = json.load(open(self.path))
                 self.cells.update(data.get("cells", {}))
                 self.events = data.get("events", [])
+                raw_course_stats = data.get("course_stats", {})
+                self.course_stats = {
+                    str(course): {
+                        "success": int(stats.get("success", 0)),
+                        "failure": int(stats.get("failure", 0)),
+                    }
+                    for course, stats in raw_course_stats.items()
+                    if isinstance(stats, dict)
+                }
             except (json.JSONDecodeError, OSError):
                 pass
 
     def reset(self):
         self.events = []
+        self.course_stats = {}
         self._init_prior()
         self.save()
 
@@ -231,8 +273,13 @@ class ScheduleOptimizer:
         )
         spacing_term = -0.7 * same_task_today
 
+        # 6. course-level Bayesian success score. Kept intentionally small so
+        # the existing focus/deadline/preference behaviour remains dominant.
+        course_score = self.model.get_course_score(block.course)
+        course_term = COURSE_WEIGHT * course_score
+
         total = (1.4 * focus_term + 1.2 * pressure_term + pref_term
-                 + balance_term + spacing_term)
+                 + balance_term + spacing_term + course_term)
         return total
 
     # --- construction + local search --------------------------------------
@@ -312,6 +359,7 @@ class ScheduleOptimizer:
     def _explain(self, b: Block, day: str, slot: str, assignment):
         p = self.model.p_complete(day, slot)
         n = self.model.observations(day, slot)
+        course_score = self.model.get_course_score(b.course)
         days_left = _days_until(b.deadline, self.week_monday)[day]
         period = SLOT_PERIOD[SLOTS.index(slot)]
         reasons = []
@@ -325,7 +373,14 @@ class ScheduleOptimizer:
             reasons.append(f"hard task placed in your preferred {self.focus_window} focus window")
         if b.deadline and days_left <= 3:
             reasons.append(f"deadline in {days_left} day{'s' if days_left != 1 else ''} ({b.deadline})")
+        reasons.append(
+            f"your past completion rate for {b.course} is {int(round(course_score * 100))}%")
         if b.parts > 1:
             reasons.append(f"session {b.part} of {b.parts} - spaced over the week for better retention")
         text = "Placed here because " + "; ".join(reasons) + "."
-        return text, {"p_complete": round(p, 2), "observations": n, "days_to_deadline": days_left}
+        return text, {
+            "p_complete": round(p, 2),
+            "observations": n,
+            "days_to_deadline": days_left,
+            "course_score": round(course_score, 2),
+        }
