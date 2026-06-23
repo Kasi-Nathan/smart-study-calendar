@@ -19,38 +19,94 @@ const timeSlots = [
   "19:00-20:30",
 ];
 
+const CALENDAR_STORAGE_KEY = "smart-study-calendar-react-blocks-v1";
+
+function getWeekMonday(value = new Date()) {
+  const monday = new Date(value);
+  monday.setHours(0, 0, 0, 0);
+  const weekday = monday.getDay();
+  monday.setDate(monday.getDate() + (weekday === 0 ? -6 : 1 - weekday));
+  return monday;
+}
+
+function addDays(value, amount) {
+  const result = new Date(value);
+  result.setDate(result.getDate() + amount);
+  return result;
+}
+
+function formatLocalDate(value) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function blockId(block) {
   return block.id ?? `${block.taskId}-part-${block.part}`;
 }
 
-function normalizeBlock(block, day, slot) {
+function normalizeBlock(block, day, slot, weekStart = getWeekMonday()) {
+  const [startTime, endTime] = slot.split("-");
+  const date = formatLocalDate(addDays(weekStart, days.indexOf(day)));
   return {
     ...block,
     id: blockId(block),
     day,
     slot,
+    start: block.start ?? `${date}T${startTime}:00`,
+    end: block.end ?? `${date}T${endTime}:00`,
     reason: block.reason ?? block.explanation ?? "",
   };
 }
 
-function findBlockCell(grid, id) {
-  if (!grid) return null;
-  for (const day of days) {
-    for (const slot of timeSlots) {
-      if (grid[day]?.[slot]?.id === id) return { day, slot };
-    }
-  }
-  return null;
+function gridToScheduledBlocks(grid, weekStart = getWeekMonday()) {
+  if (!grid) return [];
+  return days.flatMap((day) =>
+    timeSlots.flatMap((slot) => {
+      const block = grid[day]?.[slot];
+      return block ? [normalizeBlock(block, day, slot, weekStart)] : [];
+    })
+  );
 }
 
-function dateToScheduleCell(value) {
+function calendarPosition(value, endValue) {
   const date = new Date(value);
   const day = days[(date.getDay() + 6) % 7];
-  const start = `${String(date.getHours()).padStart(2, "0")}:${String(
+  const startTime = `${String(date.getHours()).padStart(2, "0")}:${String(
     date.getMinutes()
   ).padStart(2, "0")}`;
-  const slot = timeSlots.find((candidate) => candidate.startsWith(`${start}-`));
+  const end = new Date(endValue);
+  const endTime = `${String(end.getHours()).padStart(2, "0")}:${String(
+    end.getMinutes()
+  ).padStart(2, "0")}`;
+  const slot = `${startTime}-${endTime}`;
+  return { day, slot };
+}
+
+function getFeedbackCell(block) {
+  const start = new Date(block.start);
+  const day = days[(start.getDay() + 6) % 7];
+  const minutes = start.getHours() * 60 + start.getMinutes();
+  const slot = timeSlots.reduce((closest, candidate) => {
+    const [candidateStart] = candidate.split("-");
+    const [hours, mins] = candidateStart.split(":").map(Number);
+    const distance = Math.abs(hours * 60 + mins - minutes);
+    return !closest || distance < closest.distance
+      ? { slot: candidate, distance }
+      : closest;
+  }, null)?.slot;
   return slot ? { day, slot } : null;
+}
+
+function loadStoredBlocks() {
+  try {
+    const saved = localStorage.getItem(CALENDAR_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function isoDaysFromNow(n) {
@@ -245,7 +301,7 @@ function SparklesIcon({ className = "h-3.5 w-3.5" }) {
 export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [tasks, setTasks] = useState(initialTasks);
-  const [schedule, setSchedule] = useState(null);
+  const [scheduledBlocks, setScheduledBlocks] = useState(loadStoredBlocks);
   const [calendarExpanded, setCalendarExpanded] = useState(false);
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [aiExplanation, setAIExplanation] = useState("");
@@ -289,6 +345,13 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(
+      CALENDAR_STORAGE_KEY,
+      JSON.stringify(scheduledBlocks)
+    );
+  }, [scheduledBlocks]);
+
   async function refreshModel() {
     try {
       const data = await fetchModel();
@@ -300,27 +363,20 @@ export default function App() {
   }
 
   const analytics = useMemo(() => {
-    let total = 0;
-    let completed = 0;
-    let skipped = 0;
-    if (!schedule) return { total: 0, completed: 0, skipped: 0, completionRate: 0 };
-    days.forEach((day) => {
-      timeSlots.forEach((slot) => {
-        const block = schedule[day][slot];
-        if (block) {
-          total++;
-          if (block.status === "Completed") completed++;
-          if (block.status === "Skipped") skipped++;
-        }
-      });
-    });
+    const total = scheduledBlocks.length;
+    const completed = scheduledBlocks.filter(
+      (block) => block.status === "Completed"
+    ).length;
+    const skipped = scheduledBlocks.filter(
+      (block) => block.status === "Skipped"
+    ).length;
     return {
       total,
       completed,
       skipped,
       completionRate: total === 0 ? 0 : Math.round((completed / total) * 100),
     };
-  }, [schedule]);
+  }, [scheduledBlocks]);
 
   function handleAddTask(event) {
     event.preventDefault();
@@ -348,17 +404,9 @@ export default function App() {
 
   function handleDeleteTask(taskId) {
     setTasks((prev) => prev.filter((task) => task.id !== taskId));
-    if (schedule) {
-      setSchedule((prev) => {
-        const updated = structuredClone(prev);
-        days.forEach((day) => {
-          timeSlots.forEach((slot) => {
-            if (updated[day][slot]?.taskId === taskId) updated[day][slot] = null;
-          });
-        });
-        return updated;
-      });
-    }
+    setScheduledBlocks((prev) =>
+      prev.filter((block) => block.taskId !== taskId)
+    );
     setRecommendation("Task deleted. You can regenerate your weekly plan.");
   }
 
@@ -374,13 +422,13 @@ export default function App() {
           grid[day][slot] = b ? normalizeBlock(b, day, slot) : null;
         });
       });
-      setSchedule(grid);
+      setScheduledBlocks(gridToScheduledBlocks(grid));
       setBackendOnline(true);
       setRecommendation(data.message);
       refreshModel();
     } catch {
       setBackendOnline(false);
-      setSchedule(generateLocalSchedule(tasks));
+      setScheduledBlocks(gridToScheduledBlocks(generateLocalSchedule(tasks)));
       setRecommendation(
         "Python engine not reachable - generated a plan with the local fallback heuristic instead."
       );
@@ -390,88 +438,82 @@ export default function App() {
     }
   }
 
-  function handleMoveBlock(id, newStart, newEnd) {
-    const target = dateToScheduleCell(newStart);
-    const source = findBlockCell(schedule, id);
-    if (!source || !target) return false;
-
-    const { day: sourceDay, slot: sourceSlot } = source;
-    const { day: targetDay, slot: targetSlot } = target;
-    if (sourceDay === targetDay && sourceSlot === targetSlot) {
-      return true;
-    }
-
-    setSchedule((prev) => {
-      const currentSource = findBlockCell(prev, id);
-      if (!currentSource) return prev;
-
-      const updated = structuredClone(prev);
-      const sourceBlock = updated[currentSource.day][currentSource.slot];
-      const targetBlock = updated[targetDay][targetSlot];
-      if (!sourceBlock) return prev;
-
-      if (targetBlock) {
-        updated[currentSource.day][currentSource.slot] = {
-          ...targetBlock,
-          day: currentSource.day,
-          slot: currentSource.slot,
+  function updateBlockTime(id, newStart, newEnd) {
+    if (!newStart || !newEnd) return false;
+    if (!scheduledBlocks.some((block) => block.id === id)) return false;
+    const position = calendarPosition(newStart, newEnd);
+    const manualReason =
+      "Manually adjusted by you - the optimizer respects your choice. (User control over AI initiative.)";
+    setScheduledBlocks((prev) =>
+      prev.map((block) => {
+        if (block.id !== id) return block;
+        return {
+          ...block,
+          ...position,
+          start: newStart.toISOString(),
+          end: newEnd.toISOString(),
+          manuallyMoved: true,
+          explanation: manualReason,
+          reason: manualReason,
         };
-      } else {
-        updated[currentSource.day][currentSource.slot] = null;
-      }
-
-      const manualReason =
-        "Manually moved by you - the optimizer respects your choice. (User control over AI initiative.)";
-      updated[targetDay][targetSlot] = {
-        ...sourceBlock,
-        day: targetDay,
-        slot: targetSlot,
-        start: newStart.toISOString(),
-        end: newEnd.toISOString(),
-        manuallyMoved: true,
-        explanation: manualReason,
-        reason: manualReason,
-      };
-      return updated;
-    });
-
+      })
+    );
     setSelectedBlock((current) =>
       current?.id === id
         ? {
             ...current,
-            day: targetDay,
-            slot: targetSlot,
+            ...position,
             start: newStart.toISOString(),
             end: newEnd.toISOString(),
             manuallyMoved: true,
+            explanation: manualReason,
+            reason: manualReason,
           }
         : current
     );
-    setRecommendation("Task moved. Your schedule now reflects the new placement.");
     return true;
+  }
+
+  function handleEventDrop(id, newStart, newEnd) {
+    const updated = updateBlockTime(id, newStart, newEnd);
+    if (updated) {
+      setRecommendation(
+        "Task moved. Your schedule now reflects the new placement."
+      );
+    }
+    return updated;
+  }
+
+  function handleEventResize(id, newStart, newEnd) {
+    const updated = updateBlockTime(id, newStart, newEnd);
+    if (updated) {
+      setRecommendation(
+        "Study block duration updated. Your manual adjustment has been saved."
+      );
+    }
+    return updated;
   }
 
   async function handleFeedback(block, action) {
     const status = action === "complete" ? "Completed" : "Skipped";
-    const cell = findBlockCell(schedule, block.id);
-    if (!cell) return;
+    const currentBlock = scheduledBlocks.find((item) => item.id === block.id);
+    if (!currentBlock) return;
 
-    setSchedule((prev) => {
-      const currentCell = findBlockCell(prev, block.id);
-      if (!currentCell) return prev;
-      const updated = structuredClone(prev);
-      updated[currentCell.day][currentCell.slot].status = status;
-      return updated;
-    });
+    setScheduledBlocks((prev) =>
+      prev.map((item) =>
+        item.id === block.id ? { ...item, status } : item
+      )
+    );
     setSelectedBlock((current) =>
       current?.id === block.id ? { ...current, status } : current
     );
 
-    if (backendOnline) {
+    const feedbackCell = getFeedbackCell(currentBlock);
+    if (backendOnline && feedbackCell) {
       try {
         const res = await sendFeedback(
-          cell.day,
-          cell.slot,
+          feedbackCell.day,
+          feedbackCell.slot,
           action === "complete"
         );
         setRecommendation(res.message);
@@ -594,13 +636,14 @@ export default function App() {
           {activePage === "Calendar" && (
             <>
               <CalendarView
-                schedule={schedule}
+                scheduledBlocks={scheduledBlocks}
                 generating={generating}
                 expanded={calendarExpanded}
                 onToggleExpanded={() => setCalendarExpanded((value) => !value)}
                 onRegenerate={handleGeneratePlan}
-                onMoveBlock={handleMoveBlock}
-                onOpenBlock={openBlockDetails}
+                onEventDrop={handleEventDrop}
+                onEventResize={handleEventResize}
+                onSelectBlock={openBlockDetails}
                 onExplainBlock={handleAIExplain}
               />
               {selectedBlock && (

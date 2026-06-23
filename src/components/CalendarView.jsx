@@ -5,15 +5,6 @@ import interactionPlugin from "@fullcalendar/interaction";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import "./CalendarView.css";
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const TIME_SLOTS = [
-  "09:00-10:30",
-  "10:30-12:00",
-  "14:00-15:30",
-  "16:00-17:30",
-  "19:00-20:30",
-];
-
 function getWeekMonday(value = new Date()) {
   const monday = new Date(value);
   monday.setHours(0, 0, 0, 0);
@@ -22,70 +13,34 @@ function getWeekMonday(value = new Date()) {
   return monday;
 }
 
-function addDays(value, amount) {
-  const result = new Date(value);
-  result.setDate(result.getDate() + amount);
-  return result;
-}
+function blocksToCalendarEvents(blocks) {
+  return blocks.map((block) => {
+    const statusClass =
+      block.status === "Completed"
+        ? "study-completed"
+        : block.status === "Skipped"
+          ? "study-skipped"
+          : "";
 
-function formatLocalDate(value) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function scheduleToCalendarEvents(schedule, weekStart) {
-  if (!schedule) return [];
-
-  return DAYS.flatMap((day, dayOffset) =>
-    TIME_SLOTS.flatMap((slot) => {
-      const block = schedule[day]?.[slot];
-      if (!block) return [];
-
-      const [startTime, endTime] = slot.split("-");
-      const date = formatLocalDate(addDays(weekStart, dayOffset));
-      const statusClass =
-        block.status === "Completed"
-          ? "study-completed"
-          : block.status === "Skipped"
-            ? "study-skipped"
-            : "";
-
-      return [{
-        id: String(block.id),
-        title: `${block.course}: ${block.title}`,
-        start: `${date}T${startTime}:00`,
-        end: `${date}T${endTime}:00`,
-        classNames: [
-          `study-${block.difficulty.toLowerCase()}`,
-          statusClass,
-        ].filter(Boolean),
-        extendedProps: {
-          block,
-          taskId: block.taskId,
-          status: block.status,
-          difficulty: block.difficulty,
-          reason: block.reason,
-          scoreBreakdown: block.scoreBreakdown,
-        },
-      }];
-    })
-  );
-}
-
-function calendarDateToCell(value, weekStart) {
-  const date = new Date(value);
-  if (formatLocalDate(getWeekMonday(date)) !== formatLocalDate(weekStart)) {
-    return null;
-  }
-
-  const day = DAYS[(date.getDay() + 6) % 7];
-  const start = `${String(date.getHours()).padStart(2, "0")}:${String(
-    date.getMinutes()
-  ).padStart(2, "0")}`;
-  const slot = TIME_SLOTS.find((candidate) => candidate.startsWith(`${start}-`));
-  return slot ? { day, slot } : null;
+    return {
+      id: String(block.id),
+      title: `${block.course}: ${block.title}`,
+      start: block.start,
+      end: block.end,
+      classNames: [
+        `study-${block.difficulty.toLowerCase()}`,
+        statusClass,
+      ].filter(Boolean),
+      extendedProps: {
+        block,
+        taskId: block.taskId,
+        status: block.status,
+        difficulty: block.difficulty,
+        reason: block.reason,
+        scoreBreakdown: block.scoreBreakdown,
+      },
+    };
+  });
 }
 
 function SparklesIcon() {
@@ -98,31 +53,42 @@ function SparklesIcon() {
 }
 
 export default function CalendarView({
-  schedule,
+  scheduledBlocks,
   generating,
   expanded,
   onToggleExpanded,
   onRegenerate,
-  onMoveBlock,
-  onOpenBlock,
+  onEventDrop,
+  onEventResize,
+  onSelectBlock,
   onExplainBlock,
 }) {
   const weekStart = useMemo(() => getWeekMonday(), []);
   const events = useMemo(
-    () => scheduleToCalendarEvents(schedule, weekStart),
-    [schedule, weekStart]
+    () => blocksToCalendarEvents(scheduledBlocks),
+    [scheduledBlocks]
   );
 
   function handleEventDrop(info) {
     const block = info.oldEvent.extendedProps.block;
-    const target = calendarDateToCell(info.event.start, weekStart);
-    if (!block || !target || !info.event.end) {
+    if (!block || !info.event.start || !info.event.end) {
       info.revert();
       return;
     }
 
-    const moved = onMoveBlock(block.id, info.event.start, info.event.end);
+    const moved = onEventDrop(block.id, info.event.start, info.event.end);
     if (moved === false) info.revert();
+  }
+
+  function handleEventResize(info) {
+    const block = info.oldEvent.extendedProps.block;
+    if (!block || !info.event.start || !info.event.end) {
+      info.revert();
+      return;
+    }
+
+    const resized = onEventResize(block.id, info.event.start, info.event.end);
+    if (resized === false) info.revert();
   }
 
   function renderEvent(info) {
@@ -175,7 +141,7 @@ export default function CalendarView({
         </div>
       </div>
 
-      {!schedule ? (
+      {!scheduledBlocks.length ? (
         <div className="calendar-empty">
           Generate a weekly plan to display your scheduled study blocks.
         </div>
@@ -193,7 +159,7 @@ export default function CalendarView({
             navLinks
             editable
             eventStartEditable
-            eventDurationEditable={false}
+            eventDurationEditable
             allDaySlot={false}
             slotMinTime="08:00:00"
             slotMaxTime="22:00:00"
@@ -208,10 +174,14 @@ export default function CalendarView({
             }}
             events={events}
             eventContent={renderEvent}
+            eventDidMount={(info) => {
+              info.el.title = info.event.title;
+            }}
             eventClick={(info) => {
-              onOpenBlock(info.event.extendedProps.block);
+              onSelectBlock(info.event.extendedProps.block);
             }}
             eventDrop={handleEventDrop}
+            eventResize={handleEventResize}
           />
         </div>
       )}
